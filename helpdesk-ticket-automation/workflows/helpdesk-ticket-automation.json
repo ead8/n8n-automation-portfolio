@@ -1,0 +1,520 @@
+{
+  "name": "Helpdesk Ticket Automation",
+  "nodes": [
+    {
+      "id": "0cc68dc7-29d7-4fdf-b999-1ecf2cd0ae2d",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        140
+      ],
+      "parameters": {
+        "content": "## 1 \u00b7 Intake & validation\nPOST a ticket to the webhook below. The \"Validate & Normalize\" Code node\nrequires `name`, `email` (regex-checked) and `message`, then mints a ticket\nlike `TKT-20261019-152301-a1b2`. Invalid tickets are rejected with HTTP 400.",
+        "height": 160,
+        "width": 620,
+        "color": 4
+      }
+    },
+    {
+      "id": "a4d6cc84-1be0-48a6-a578-b32351a9707d",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        900,
+        140
+      ],
+      "parameters": {
+        "content": "## 2 \u00b7 Triage & knowledge base\n\"Classify\" is a RULES-BASED keyword scorer \u2014 no LLM here. This is the\ndocumented upgrade slot: swap this node for an n8n AI Agent / OpenAI node\nin production for smarter classification. \"KB lookup\" scores 8 embedded\nhelp articles against the ticket text (hit threshold: 2 keyword matches).",
+        "height": 190,
+        "width": 620,
+        "color": 5
+      }
+    },
+    {
+      "id": "a341a83d-f5b8-4282-a093-3ea2687c3778",
+      "name": "Sticky Note2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1620,
+        140
+      ],
+      "parameters": {
+        "content": "## 3 \u00b7 Routing\nAuto-resolvable = KB article matched AND priority is not \"high\".\nEverything else escalates to a human. Low-risk tickets get an instant\nanswer; urgent or unknown tickets page the right queue.",
+        "height": 160,
+        "width": 640,
+        "color": 6
+      }
+    },
+    {
+      "id": "2ba982bf-749c-4483-97d2-ea082bf1f4a0",
+      "name": "Sticky Note3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1620,
+        700
+      ],
+      "parameters": {
+        "content": "## 4 \u00b7 Auto-reply branch (left)\nComposes a personalised email from the KB article, POSTs it to the\noutbound endpoint ($env.OUTBOUND_EMAIL_URL \u2014 point this at Gmail/SMTP in\nproduction), saves the ticket record, and replies 200 to the caller.",
+        "height": 160,
+        "width": 640,
+        "color": 3
+      }
+    },
+    {
+      "id": "19ee8c7f-1e00-4924-b9b3-0cd357a1e6ac",
+      "name": "Sticky Note4",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        700
+      ],
+      "parameters": {
+        "content": "## 5 \u00b7 Escalation branch (right)\nComposes a Slack alert with ticket id, category, priority, SLA deadline and\nsuggested queue, POSTs it to $env.SLACK_WEBHOOK_URL (a real Slack incoming\nwebhook in production), saves the ticket record, and replies 200.",
+        "height": 160,
+        "width": 640,
+        "color": 7
+      }
+    },
+    {
+      "id": "f8eef5d3-2503-41f0-aca2-56d03e415a3f",
+      "name": "New ticket (webhook)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        420
+      ],
+      "webhookId": "helpdesk-ticket-intake",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "helpdesk-ticket",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "0b109656-5a6c-4575-a39d-f3c92dcf5852",
+      "name": "Validate & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst item = (raw && typeof raw === 'object' && raw.body && typeof raw.body === 'object') ? raw.body : raw;\nconst errors = [];\nconst name = (item.name ?? '').toString().trim();\nconst email = (item.email ?? '').toString().trim();\nconst subject = (item.subject ?? '').toString().trim();\nconst message = (item.message ?? '').toString().trim();\nconst channel = ((item.channel ?? 'web').toString().trim().toLowerCase()) || 'web';\n\nif (!name) errors.push('name is required');\nconst emailRe = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/;\nif (!email) errors.push('email is required');\nelse if (!emailRe.test(email)) errors.push('email is not a valid email address');\nif (!message) errors.push('message is required');\n\nconst now = new Date();\nconst pad = (n) => String(n).padStart(2, '0');\nconst stamp = now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());\nconst rand = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');\n\nconst ticket = {\n  id: 'TKT-' + stamp + '-' + rand,\n  createdAt: now.toISOString(),\n  channel, name, email, subject, message,\n  text: (subject + ' ' + message).toLowerCase(),\n};\n\nreturn [{ json: { valid: errors.length === 0, errors, ticket } }];"
+      }
+    },
+    {
+      "id": "59ce4d7f-63e0-4d2d-8e4a-a2f4028793bd",
+      "name": "Valid ticket?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        680,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "59ce4d7f-cond-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "e0b8ae67-47ef-4e03-ad78-3cc2bc6219e1",
+      "name": "Reject invalid ticket",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        600
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: false, errors: $json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      }
+    },
+    {
+      "id": "70253a4f-fc87-4b57-9874-c9ad0ad1bd43",
+      "name": "Classify (rules-based triage)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        420
+      ],
+      "parameters": {
+        "jsCode": "// RULES-BASED triage \u2014 deterministic keyword scoring, no LLM.\n// Production upgrade slot: replace this node with an AI Agent (OpenAI/Anthropic)\n// that returns { category, priority } as structured output.\nconst { ticket } = $input.first().json;\nconst text = ' ' + ticket.text + ' ';\nconst hit = (kw) => text.includes(kw);\n\nconst CATEGORIES = {\n  billing:   ['invoice', 'charged', 'charge', 'payment', 'refund', 'billing', 'subscription', 'receipt', 'overcharged'],\n  technical: ['error', 'bug', 'crash', 'broken', 'timeout', 'api', ' 500 ', 'slow', 'down', 'outage', 'not working'],\n  account:   ['login', 'password', 'sign in', 'locked', '2fa', 'two-factor', 'account', 'profile', 'invite', 'teammate', 'workspace', 'member'],\n  order:     ['order', 'shipping', 'delivery', 'tracking', 'package', 'arrived', 'shipment'],\n};\nconst URGENT = ['outage', 'down', 'hacked', 'fraud', 'breach', 'all users', \"can't access\", 'cannot access', 'data loss', 'security', 'urgent', 'asap', 'scam'];\nconst FRUSTRATED = ['angry', 'frustrated', 'terrible', 'awful', 'worst', 'scam', 'lawsuit'];\nconst PAYMENT_FAILURE = ['charged twice', 'unauthorized', 'failed payment', 'double charge', 'double charged'];\n\nlet category = 'general', best = 0;\nconst catHits = {};\nfor (const [cat, kws] of Object.entries(CATEGORIES)) {\n  const hits = kws.filter(hit);\n  catHits[cat] = hits;\n  if (hits.length > best) { best = hits.length; category = cat; }\n}\nconst urgentHits = URGENT.filter(hit);\nconst frustHits = FRUSTRATED.filter(hit);\nconst payFailHits = PAYMENT_FAILURE.filter(hit);\n\nlet priority = 'low';\nif (urgentHits.length > 0 || (category === 'billing' && payFailHits.length > 0) || (frustHits.length >= 2 && category === 'technical')) {\n  priority = 'high';\n} else if (['technical', 'billing', 'order'].includes(category)) {\n  priority = 'medium';\n}\n\nconst slaHours = { high: 1, medium: 8, low: 24 }[priority];\nconst slaDeadline = new Date(Date.now() + slaHours * 3600 * 1000).toISOString();\n\nreturn [{ json: {\n  valid: true, errors: [], ticket,\n  category, priority,\n  matchedKeywords: { category: catHits[category] || [], urgent: urgentHits, frustration: frustHits, paymentFailure: payFailHits },\n  slaHours, slaDeadline,\n}}];"
+      }
+    },
+    {
+      "id": "39c8f526-0474-42d6-9e86-e9a935f3c740",
+      "name": "Knowledge base lookup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst text = ' ' + input.ticket.text + ' ';\nconst hit = (kw) => text.includes(kw.toLowerCase());\n\nconst KB = [\n  { id: 'kb-password-reset', title: 'How to reset your password',\n    keywords: ['password', 'reset', 'forgot', 'sign in', 'log in'],\n    body: 'Click \"Forgot password\" on the sign-in page and enter your account email. You will receive a reset link that is valid for 60 minutes. If you do not see it, check your spam folder, then request a new link \u2014 each new request invalidates the previous one.',\n    link: 'https://support.example.com/articles/password-reset' },\n  { id: 'kb-refund-policy', title: 'Refund policy (30 days)',\n    keywords: ['refund', 'cancel', 'cancellation', 'money back', '30-day'],\n    body: 'We offer a 30-day money-back guarantee on all paid plans. Cancel from Settings \u2192 Billing and the refund is issued automatically to your original payment method within 5\u201310 business days. After 30 days, cancellations stop future billing but are not refunded.',\n    link: 'https://support.example.com/articles/refund-policy' },\n  { id: 'kb-double-charge', title: 'Why you might see a double charge',\n    keywords: ['double', 'charged twice', 'duplicate charge', 'billing'],\n    body: 'Most \"double charges\" are a temporary authorization hold: your bank shows the pending hold plus the settled charge, and the hold drops off in 1\u20135 business days. If both charges are settled (not pending) after 5 days, reply here and our billing team will reverse the duplicate immediately.',\n    link: 'https://support.example.com/articles/double-charge' },\n  { id: 'kb-upgrade-plan', title: 'Upgrading or changing your plan',\n    keywords: ['upgrade', 'plan', 'pricing', 'subscription', 'trial'],\n    body: 'You can upgrade at any time from Settings \u2192 Billing \u2192 Change plan. The new plan applies immediately and we prorate the difference, so you only pay for what you use. Downgrades take effect at the end of the current billing cycle.',\n    link: 'https://support.example.com/articles/upgrade-plan' },\n  { id: 'kb-api-errors', title: 'Fixing API 401 and rate-limit errors',\n    keywords: ['api', '401', 'rate limit', 'token', 'integration'],\n    body: 'A 401 means your API token is missing, expired, or revoked \u2014 generate a fresh token in Settings \u2192 API keys. A 429 means you hit the rate limit (100 requests/minute); back off exponentially and retry. If 401s persist with a fresh token, check you are sending \"Authorization: Bearer <token>\".',\n    link: 'https://support.example.com/articles/api-errors' },\n  { id: 'kb-invite-team', title: 'Inviting team members to your workspace',\n    keywords: ['invite', 'teammate', 'member', 'workspace', 'collaborator'],\n    body: 'Go to Settings \u2192 Team \u2192 Invite members and enter their email addresses. Choose Admin for full access or Member for day-to-day use. Invites expire after 7 days \u2014 you can resend them from the same page. Guests are free on all paid plans.',\n    link: 'https://support.example.com/articles/invite-team' },\n  { id: 'kb-export-data', title: 'Exporting your data',\n    keywords: ['export', 'download', 'data', 'csv', 'backup'],\n    body: 'Export everything from Settings \u2192 Data \u2192 Export. You can download a CSV of records or a full JSON backup including attachments. Large exports are prepared in the background and emailed to you as a download link within an hour.',\n    link: 'https://support.example.com/articles/export-data' },\n  { id: 'kb-human-support', title: 'Reaching a human support agent',\n    keywords: ['human support', 'talk to someone', 'phone number', 'call us', 'live agent'],\n    body: 'To reach a human: reply to any support email and it reopens your ticket, or call us at +1-555-0100 (Mon\u2013Fri, 9am\u20136pm EAT). Median first response from a human agent is under 2 hours on business days.',\n    link: 'https://support.example.com/articles/contact-support' },\n];\n\nlet bestArticle = null, bestScore = 0;\nfor (const a of KB) {\n  const score = a.keywords.filter(hit).length;\n  if (score > bestScore) { bestScore = score; bestArticle = a; }\n}\nconst kbHit = bestScore >= 2;\n\nreturn [{ json: {\n  ...input,\n  kb: { kbHit, score: bestScore, article: kbHit ? bestArticle : null },\n}}];"
+      }
+    },
+    {
+      "id": "34c7b6e3-8327-4761-ac6e-617148a69a67",
+      "name": "Auto-resolvable?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1520,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "34c7b6e3-cond-kb",
+              "leftValue": "={{ $json.kb.kbHit }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            },
+            {
+              "id": "34c7b6e3-cond-prio",
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "high",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "0cc1c5a7-6681-40e9-8e84-197e8c5ece75",
+      "name": "Compose auto-reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst { ticket, category, priority, slaDeadline, kb } = input;\nconst article = kb.article;\n\nconst body = 'Hi ' + ticket.name + ',\\n\\n' +\n  'Thanks for reaching out \u2014 this is an automated reply to your ticket ' + ticket.id + '.\\n\\n' +\n  'This article from our help center should answer your question:\\n\\n' +\n  article.title + '\\n' + article.body + '\\n' +\n  'Read more: ' + article.link + '\\n\\n' +\n  'Did this resolve your issue? If not, just reply to this message and a human agent will pick it up \u2014 your ticket stays open.\\n\\n' +\n  'Best,\\nSupport Team\\n' +\n  'Ticket: ' + ticket.id + ' \u00b7 Category: ' + category + ' \u00b7 Priority: ' + priority + ' \u00b7 Respond-by: ' + slaDeadline;\n\nreturn [{ json: {\n  to: ticket.email,\n  subject: 'Re: ' + (ticket.subject || 'Your support request') + ' [' + ticket.id + ']',\n  body,\n  record: {\n    ticket,\n    classification: { category, priority, matchedKeywords: input.matchedKeywords, slaHours: input.slaHours, slaDeadline },\n    kb: { kbHit: kb.kbHit, score: kb.score, articleId: article.id, articleTitle: article.title },\n  },\n}}];"
+      }
+    },
+    {
+      "id": "8a16ed93-690c-4ca7-922d-06c585550e5a",
+      "name": "Send customer reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2060,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OUTBOUND_EMAIL_URL }}",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ to: $json.to, subject: $json.subject, body: $json.body }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "082a947c-3eba-418d-acaa-b32a68398102",
+      "name": "Assemble auto-reply record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const compose = $('Compose auto-reply').first().json;\nconst sendResult = $input.first().json;\nconst r = compose.record;\nconst message = 'Ticket ' + r.ticket.id + ' was resolved automatically \u2014 the answer has been emailed to ' + r.ticket.email + '.';\nreturn [{ json: {\n  record: { ...r, outcome: 'auto_reply_sent', sentAt: new Date().toISOString(), outboundResponse: sendResult },\n  ticketId: r.ticket.id,\n  status: 'auto_resolved',\n  category: r.classification.category,\n  priority: r.classification.priority,\n  slaDeadline: r.classification.slaDeadline,\n  message,\n}}];"
+      }
+    },
+    {
+      "id": "8417a715-f0fe-4d27-a012-fbb3494c1562",
+      "name": "Compose escalation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        620
+      ],
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst { ticket, category, priority, slaDeadline, kb, matchedKeywords } = input;\nconst QUEUES = { billing: 'billing-queue', technical: 'eng-oncall', account: 'support-tier1', order: 'fulfillment', general: 'support-tier1' };\nconst summary = ticket.message.slice(0, 200);\nconst queue = QUEUES[category] || 'support-tier1';\n\nconst text = ':rotating_light: *New ' + priority.toUpperCase() + ' support ticket* ' + ticket.id + '\\n' +\n  '*Category:* ' + category + '\\n' +\n  '*Priority:* ' + priority + '\\n' +\n  '*SLA deadline:* ' + slaDeadline + '\\n' +\n  '*Customer:* ' + ticket.name + ' <' + ticket.email + '> (via ' + ticket.channel + ')\\n' +\n  '*Subject:* ' + (ticket.subject || '(no subject)') + '\\n' +\n  '*Summary:* ' + summary + '\\n' +\n  '*Suggested queue:* ' + queue + '\\n' +\n  '*KB article matched:* ' + (kb.kbHit ? kb.article.title : 'none');\n\nreturn [{ json: {\n  text,\n  ticketId: ticket.id,\n  queue,\n  priority,\n  category,\n  slaDeadline,\n  record: {\n    ticket,\n    classification: { category, priority, matchedKeywords, slaHours: input.slaHours, slaDeadline },\n    kb: { kbHit: kb.kbHit, score: kb.score, articleId: kb.article ? kb.article.id : null, articleTitle: kb.article ? kb.article.title : null },\n  },\n}}];"
+      }
+    },
+    {
+      "id": "205602b2-494b-499e-a07c-81854e1d12b1",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2060,
+        620
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_WEBHOOK_URL }}",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, ticketId: $json.ticketId, queue: $json.queue, priority: $json.priority, category: $json.category, slaDeadline: $json.slaDeadline }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "fdea15e8-3eba-418d-acaa-b32a68398102",
+      "name": "Assemble escalation record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        620
+      ],
+      "parameters": {
+        "jsCode": "const compose = $('Compose escalation').first().json;\nconst sendResult = $input.first().json;\nconst r = compose.record;\nconst message = 'Ticket ' + r.ticket.id + ' has been escalated to a human agent (' + compose.queue + ', ' + r.classification.priority + ' priority). Expected response by ' + r.classification.slaDeadline + '.';\nreturn [{ json: {\n  record: { ...r, outcome: 'escalation_sent', sentAt: new Date().toISOString(), outboundResponse: sendResult },\n  ticketId: r.ticket.id,\n  status: 'escalated_to_human',\n  category: r.classification.category,\n  priority: r.classification.priority,\n  slaDeadline: r.classification.slaDeadline,\n  message,\n}}];"
+      }
+    },
+    {
+      "id": "de981a27-b4d2-4644-8c70-04aad1ba34e3",
+      "name": "Write ticket record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        520
+      ],
+      "parameters": {
+        "jsCode": "// Write the ticket record as JSON using Node's fs.\n// Requires NODE_FUNCTION_ALLOW_BUILTIN=fs on the n8n instance.\nconst fs = require('fs');\nconst input = $input.first().json;\nconst dir = $env.HELPDESK_DATA_DIR || '/tmp/helpdesk-data';\nconst fileName = dir + '/ticket-' + input.ticketId + '.json';\nfs.writeFileSync(fileName, JSON.stringify(input.record, null, 2));\nreturn [{ json: { ...input, fileWritten: fileName } }];"
+      }
+    },
+    {
+      "id": "742e65f0-7310-4aca-b093-b3e74950dde4",
+      "name": "Reply to customer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2800,
+        520
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, ticketId: $json.ticketId, status: $json.status, category: $json.category, priority: $json.priority, slaDeadline: $json.slaDeadline, message: $json.message }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "New ticket (webhook)": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize": {
+      "main": [
+        [
+          {
+            "node": "Valid ticket?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid ticket?": {
+      "main": [
+        [
+          {
+            "node": "Classify (rules-based triage)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject invalid ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify (rules-based triage)": {
+      "main": [
+        [
+          {
+            "node": "Knowledge base lookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Knowledge base lookup": {
+      "main": [
+        [
+          {
+            "node": "Auto-resolvable?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-resolvable?": {
+      "main": [
+        [
+          {
+            "node": "Compose auto-reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose auto-reply": {
+      "main": [
+        [
+          {
+            "node": "Send customer reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send customer reply": {
+      "main": [
+        [
+          {
+            "node": "Assemble auto-reply record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble auto-reply record": {
+      "main": [
+        [
+          {
+            "node": "Write ticket record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose escalation": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Slack": {
+      "main": [
+        [
+          {
+            "node": "Assemble escalation record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble escalation record": {
+      "main": [
+        [
+          {
+            "node": "Write ticket record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write ticket record": {
+      "main": [
+        [
+          {
+            "node": "Reply to customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "Africa/Addis_Ababa"
+  },
+  "pinData": {},
+  "staticData": null,
+  "meta": {}
+}
