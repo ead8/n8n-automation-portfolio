@@ -1,0 +1,29 @@
+%% Lead Pipeline: Website Lead to Booked Call
+%% Blue steps are the main flow, red steps are error paths.
+%% Rendered PNG: pipeline-diagram.png (drawn by generate_diagram.py)
+flowchart LR
+    A[Lead Form<br/>website posts the lead] --> B[Validate + Normalize<br/>required fields, phone to E.164]
+    B --> C{Dedupe Check<br/>idempotency key or phone}
+    C -->|duplicate| C1[Acknowledge<br/>send nothing twice]
+    C -->|new| D[Upsert Lead<br/>Postgres, status NEW]
+    D --> E[WhatsApp Welcome Template<br/>Book a Call quick reply]
+    E --> F[Lead Replies<br/>button tap or free text]
+    F --> G[AI Slot Extraction<br/>LLM returns JSON intent + time]
+    G --> H[Validate Slot<br/>future, business hours 08:00 to 18:00]
+    H --> I[Free/Busy Check<br/>Google Calendar availability]
+    I --> J[Create Event + Read-back<br/>booking proven, not assumed]
+    J --> K[Booked<br/>WhatsApp confirm + email invite]
+    K --> L[Reminder Sweep<br/>hourly, meetings in 23 to 25 h]
+    L --> M[Verify Event Exists<br/>calendar read before sending]
+    M --> N[Reminder Sent<br/>Confirm / Reschedule buttons]
+    N --> O[Meeting Happens<br/>status REMINDED]
+
+    E -.->|send fails after 3 retries| E1[Fallback Email<br/>booking link by email]
+    E1 -.-> E2[Ops Alert + Dead Letter<br/>Slack alert, dead_letter entry]
+    I -.->|slot taken| E3[Alternatives Offered<br/>next 3 business slots probed]
+    J -.->|read-back mismatch| E4[Delete Event + Alert Ops<br/>race lost, offer alternatives]
+    G -.->|any booking step fails| E5[Booking Link Sent<br/>ops alerted, failure logged]
+    M -.->|event cancelled| E6[Mark CANCELLED<br/>notify sales, no reminder]
+
+    classDef err fill:#FDECEA,stroke:#B3261E,color:#7A1F1A;
+    class E1,E2,E3,E4,E5,E6 err;

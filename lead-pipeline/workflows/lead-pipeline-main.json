@@ -1,0 +1,795 @@
+{
+ "name": "Lead Pipeline: Intake + WhatsApp Welcome",
+ "nodes": [
+  {
+   "parameters": {
+    "content": "## Lead Pipeline: Intake + WhatsApp Welcome\nWebsite form posts a lead. The workflow validates it, dedupes on an idempotency key, stores it in Postgres, and sends an instant WhatsApp template with a Book a Call quick reply.\nIf the WhatsApp send fails after retries, the lead still gets a fallback email with the booking link, ops gets a Slack alert, and the failure lands in the dead_letter table for manual follow up.\nCredentials are placeholders. Set WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN, EMAIL_API_URL, SLACK_OPS_WEBHOOK_URL and BOOKING_LINK as n8n environment variables.",
+    "height": 220,
+    "width": 900,
+    "color": 5
+   },
+   "id": "f8b0e5f8-d92d-5a3e-a3d3-70fa022b461e",
+   "name": "Note: Overview",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -320,
+    -160
+   ]
+  },
+  {
+   "parameters": {
+    "content": "### 1. Intake and validation\nThe webhook answers through Respond to Webhook nodes (responseNode mode), so every path returns a clean JSON result. Validation is a pure function: name, phone and email are required, the phone is normalized to E.164, and the idempotency key is the form submission_id when present, else a hash of phone + email.",
+    "height": 160,
+    "width": 560,
+    "color": 5
+   },
+   "id": "a9e2d700-d040-5ee7-b3bc-1381f00d9c35",
+   "name": "Note: Intake",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -320,
+    120
+   ]
+  },
+  {
+   "parameters": {
+    "content": "### 2. Dedupe before any side effect\nA lead whose idempotency key or phone already exists with a status other than NEW is answered as a duplicate and nothing is sent twice. Retried form posts and double clicks are safe.",
+    "height": 160,
+    "width": 620,
+    "color": 5
+   },
+   "id": "c22103f3-e3d1-5a21-bb8b-3597f255b3dc",
+   "name": "Note: Dedupe",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    900,
+    120
+   ]
+  },
+  {
+   "parameters": {
+    "content": "### 3. WhatsApp welcome, with a real fallback\nTemplate send retries 3 times (node settings). The error output runs a fallback chain: mark the error on the lead, log the event, email the booking link, alert ops on Slack, and park the lead in dead_letter.",
+    "height": 160,
+    "width": 700,
+    "color": 5
+   },
+   "id": "c20e4f59-cd7f-5bd6-81fa-75468d14b011",
+   "name": "Note: WhatsApp",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    1900,
+    120
+   ]
+  },
+  {
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "lead-intake",
+    "responseMode": "responseNode",
+    "options": {}
+   },
+   "id": "7ebe61a8-f89d-5bc3-bd6f-f4e1af04827c",
+   "name": "Lead Form Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2.2,
+   "position": [
+    0,
+    380
+   ],
+   "webhookId": "lead-pipeline-lead-intake"
+  },
+  {
+   "parameters": {
+    "jsCode": "// Pure functions (also unit-testable outside n8n)\nfunction simpleHash(str) {\n  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;\n  for (let i = 0; i < str.length; i++) {\n    const ch = str.charCodeAt(i);\n    h1 = Math.imul(h1 ^ ch, 2654435761);\n    h2 = Math.imul(h2 ^ ch, 1597334677);\n  }\n  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);\n  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);\n  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');\n}\nfunction normalizePhone(raw) {\n  if (!raw) return '';\n  let p = String(raw).replace(/[\\s\\-()]/g, '');\n  if (p.startsWith('00')) p = '+' + p.slice(2);\n  if (!p.startsWith('+')) p = '+' + p.replace(/^0+/, '');\n  return p;\n}\nfunction validateLead(payload) {\n  const errors = [];\n  const name = String(payload.name || '').trim();\n  const email = String(payload.email || '').trim().toLowerCase();\n  const phoneRaw = payload.phone || payload.whatsapp || '';\n  const phone = normalizePhone(phoneRaw);\n  if (!name) errors.push('name is required');\n  if (!email) errors.push('email is required');\n  else if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) errors.push('email is invalid');\n  if (!phoneRaw) errors.push('phone is required');\n  else if (!/^\\+\\d{7,15}$/.test(phone)) errors.push('phone is invalid');\n  const idempotencyKey = payload.submission_id || ('lead_' + simpleHash(phone + '|' + email));\n  return {\n    valid: errors.length === 0,\n    errors,\n    lead: { name, email, phone, source: payload.source || 'website_form', idempotencyKey },\n  };\n}\n\n// n8n wrapper\nconst item = $input.first().json;\nconst payload = item.body || item;\nconst r = validateLead(payload);\nreturn [{ json: { valid: r.valid, errors: r.errors, ...r.lead, rawPayload: payload } }];\n"
+   },
+   "id": "f2d836bf-adb9-5e8e-a2f5-97ed1a394777",
+   "name": "Validate and Normalize",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    260,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "d6c582bf-1b40-5a30-a87f-7709b3b29c0e",
+       "leftValue": "={{ $json.valid }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "f53240ff-ed77-5e20-87e8-5cc7701aa9c2",
+   "name": "Valid?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    520,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES (NULL, 'lead.rejected', $1::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [JSON.stringify({ errors: $json.errors, payload: $json.rawPayload })] }}"
+    }
+   },
+   "id": "df6d22d7-3758-5b78-96f0-4ef6d9295715",
+   "name": "Log Rejected",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    780,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: false, errors: $('Validate and Normalize').first().json.errors }) }}",
+    "options": {
+     "responseCode": 400
+    }
+   },
+   "id": "915a87e4-cf5c-5649-8296-0a62b10762e2",
+   "name": "Reject Response",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.5,
+   "position": [
+    1040,
+    560
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "SELECT id, status FROM leads WHERE idempotency_key = $1 OR phone = $2 ORDER BY created_at ASC LIMIT 1",
+    "options": {
+     "queryReplacement": "={{ [$json.idempotencyKey, $json.phone] }}"
+    }
+   },
+   "id": "3ff0241a-60bb-5d8f-83ba-e4d219466466",
+   "name": "Find Lead by Idempotency Key",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    780,
+    300
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   },
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "jsCode": "// Reads the (0 or 1) rows returned by the dedupe SELECT and decides\n// whether this submission was already fully processed before.\nconst rows = $input.all().filter((i) => i.json && i.json.id);\nconst v = $('Validate and Normalize').first().json;\nconst existing = rows.length ? rows[0].json : null;\nconst duplicate = !!existing && !!existing.status && existing.status !== 'NEW';\nreturn [{\n  json: {\n    ...v,\n    existingId: existing ? existing.id : null,\n    existingStatus: existing ? existing.status : null,\n    duplicate,\n  },\n}];\n"
+   },
+   "id": "205f415b-dd1c-5db3-a8bf-bd0791e2b65c",
+   "name": "Assess Existing Lead",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1040,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "4212456a-4722-5ebd-b677-dc5880903597",
+       "leftValue": "={{ $json.duplicate }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "36a11e80-7021-5f38-b281-62e9b97a63c1",
+   "name": "Already Processed?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    1300,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: true, duplicate: true, leadId: $json.existingId, status: $json.existingStatus }) }}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "de00211c-1a72-5b44-8718-63344cd7e9d7",
+   "name": "Duplicate Response",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.5,
+   "position": [
+    1560,
+    160
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO leads (idempotency_key, name, email, phone, status, timezone) VALUES ($1, $2, $3, $4, 'NEW', 'Africa/Addis_Ababa') ON CONFLICT (idempotency_key) DO UPDATE SET name = EXCLUDED.name, email = EXCLUDED.email, updated_at = now() RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$json.idempotencyKey, $json.name, $json.email, $json.phone] }}"
+    }
+   },
+   "id": "b187be5e-37e8-5461-a64f-f9ce8056a294",
+   "name": "Upsert Lead",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    1560,
+    380
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const v = $('Validate and Normalize').first().json;\nconst up = $input.first().json;\nreturn [{\n  json: {\n    leadId: up.id,\n    name: v.name,\n    email: v.email,\n    phone: v.phone,\n    idempotencyKey: v.idempotencyKey,\n    source: v.source,\n  },\n}];\n"
+   },
+   "id": "b4dfcf46-ed8a-579c-8d13-5c3e67829980",
+   "name": "Merge Lead Context",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1820,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'lead.created', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$json.leadId, JSON.stringify({ source: $json.source, channel: 'website_form' })] }}"
+    }
+   },
+   "id": "237e0ad5-451c-5887-af17-7e20f2ee6f05",
+   "name": "Log Event",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2080,
+    380
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "=https://graph.facebook.com/v21.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+    "authentication": "none",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "={{ 'Bearer ' + $env.WHATSAPP_ACCESS_TOKEN }}"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  to: $('Merge Lead Context').first().json.phone.replace('+', ''),\n  type: 'template',\n  template: {\n    name: 'lead_welcome_booking',\n    language: { code: 'en' },\n    components: [\n      { type: 'body', parameters: [{ type: 'text', text: $('Merge Lead Context').first().json.name }] },\n      { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: 'BOOK_CALL' }] }\n    ]\n  }\n}) }}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "id": "022cff81-f022-59c5-937d-5f20f5700a7c",
+   "name": "Send WhatsApp Template",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2340,
+    380
+   ],
+   "retryOnFail": true,
+   "maxTries": 3,
+   "waitBetweenTries": 5000,
+   "onError": "continueErrorOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "const resp = $input.first().json || {};\nconst ctx = $('Merge Lead Context').first().json;\nconst waMessageId = (resp.messages && resp.messages[0] && resp.messages[0].id) || null;\nreturn [{ json: { ...ctx, waMessageId } }];\n"
+   },
+   "id": "196e4e6e-4be0-530b-9667-ba910c80e485",
+   "name": "Extract Message ID",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2600,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET status = 'CONTACTED', wa_message_id = $1, updated_at = now() WHERE id = $2 RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$json.waMessageId, $json.leadId] }}"
+    }
+   },
+   "id": "7dc475f3-c5f5-5d21-b50f-93d78e50e3df",
+   "name": "Mark Contacted",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2860,
+    300
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: true, leadId: $('Merge Lead Context').first().json.leadId, status: 'CONTACTED' }) }}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "f187151e-8d8e-5731-99db-98c2867c4577",
+   "name": "Success Response",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.5,
+   "position": [
+    3120,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Runs on the error output of the WhatsApp send. Builds one failure record\n// that every downstream error-handling node reads from.\nconst ctx = $('Merge Lead Context').first().json;\nconst errItem = $input.first().json || {};\nconst message = (errItem.error && (errItem.error.message || JSON.stringify(errItem.error)))\n  || errItem.message || 'WhatsApp send failed';\nreturn [{\n  json: {\n    ...ctx,\n    step: 'whatsapp_welcome',\n    error: String(message).slice(0, 500),\n  },\n}];\n"
+   },
+   "id": "c78a26d5-7df9-5c6b-9c21-92e3c9db0f99",
+   "name": "Mark WhatsApp Failed",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2600,
+    560
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET last_error = $1, attempts = attempts + 1, updated_at = now() WHERE id = $2 RETURNING id",
+    "options": {
+     "queryReplacement": "={{ [$json.error, $json.leadId] }}"
+    }
+   },
+   "id": "92e0d96e-6323-5f52-ad1c-936dc6d210c9",
+   "name": "Update Lead Error",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2860,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'whatsapp.failed', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Mark WhatsApp Failed').first().json.leadId, JSON.stringify({ step: 'whatsapp_welcome', error: $('Mark WhatsApp Failed').first().json.error })] }}"
+    }
+   },
+   "id": "88faf0b5-6451-50de-bfee-1c79da66e520",
+   "name": "Log WhatsApp Failed",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    3120,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.EMAIL_API_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ to: $('Mark WhatsApp Failed').first().json.email, subject: 'Book your call', body: 'Hi ' + $('Mark WhatsApp Failed').first().json.name + ', thanks for reaching out. We could not reach you on WhatsApp, so here is the booking link: ' + $env.BOOKING_LINK }) }}",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "id": "6c8f768f-d007-5eba-b408-6f655d17f04a",
+   "name": "Fallback Email with Booking Link",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    3380,
+    560
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: 'WhatsApp welcome failed for lead ' + $('Mark WhatsApp Failed').first().json.leadId + ' (' + $('Mark WhatsApp Failed').first().json.phone + '). Fallback email sent. Error: ' + $('Mark WhatsApp Failed').first().json.error }) }}",
+    "options": {
+     "timeout": 15000
+    }
+   },
+   "id": "fec8d438-d680-5b65-a0c2-5812f3ac3b6a",
+   "name": "Alert Ops",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    3640,
+    560
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO dead_letter (lead_id, step, payload) VALUES ($1, 'whatsapp_welcome', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Mark WhatsApp Failed').first().json.leadId, JSON.stringify({ error: $('Mark WhatsApp Failed').first().json.error, phone: $('Mark WhatsApp Failed').first().json.phone, email: $('Mark WhatsApp Failed').first().json.email })] }}"
+    }
+   },
+   "id": "eb77274e-17b6-5da6-a60d-c3e1c987e50e",
+   "name": "Add to Dead Letter",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    3900,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: true, leadId: $('Mark WhatsApp Failed').first().json.leadId, status: 'FALLBACK_EMAIL_SENT' }) }}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "6a83384f-9c64-558c-800b-dd330dc92c4c",
+   "name": "Fallback Response",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.5,
+   "position": [
+    4160,
+    560
+   ]
+  }
+ ],
+ "connections": {
+  "Lead Form Webhook": {
+   "main": [
+    [
+     {
+      "node": "Validate and Normalize",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Validate and Normalize": {
+   "main": [
+    [
+     {
+      "node": "Valid?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Valid?": {
+   "main": [
+    [
+     {
+      "node": "Find Lead by Idempotency Key",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Log Rejected",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Rejected": {
+   "main": [
+    [
+     {
+      "node": "Reject Response",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Find Lead by Idempotency Key": {
+   "main": [
+    [
+     {
+      "node": "Assess Existing Lead",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Assess Existing Lead": {
+   "main": [
+    [
+     {
+      "node": "Already Processed?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Already Processed?": {
+   "main": [
+    [
+     {
+      "node": "Duplicate Response",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Upsert Lead",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Upsert Lead": {
+   "main": [
+    [
+     {
+      "node": "Merge Lead Context",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Merge Lead Context": {
+   "main": [
+    [
+     {
+      "node": "Log Event",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Event": {
+   "main": [
+    [
+     {
+      "node": "Send WhatsApp Template",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Send WhatsApp Template": {
+   "main": [
+    [
+     {
+      "node": "Extract Message ID",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Mark WhatsApp Failed",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Extract Message ID": {
+   "main": [
+    [
+     {
+      "node": "Mark Contacted",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Contacted": {
+   "main": [
+    [
+     {
+      "node": "Success Response",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark WhatsApp Failed": {
+   "main": [
+    [
+     {
+      "node": "Update Lead Error",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Update Lead Error": {
+   "main": [
+    [
+     {
+      "node": "Log WhatsApp Failed",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log WhatsApp Failed": {
+   "main": [
+    [
+     {
+      "node": "Fallback Email with Booking Link",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Fallback Email with Booking Link": {
+   "main": [
+    [
+     {
+      "node": "Alert Ops",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Alert Ops": {
+   "main": [
+    [
+     {
+      "node": "Add to Dead Letter",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Add to Dead Letter": {
+   "main": [
+    [
+     {
+      "node": "Fallback Response",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "saveExecutionProgress": true,
+  "saveManualExecutions": true,
+  "timezone": "Africa/Addis_Ababa"
+ },
+ "pinData": {},
+ "meta": {
+  "templateCredsSetupCompleted": false
+ }
+}

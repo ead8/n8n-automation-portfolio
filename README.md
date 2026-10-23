@@ -1,6 +1,6 @@
 # n8n Automation Portfolio
 
-Four production-style automation builds on **n8n** — each one a complete,
+Five production-style automation builds on **n8n** — each one a complete,
 documented system: workflow JSONs, prompts, SQL, architecture diagrams, and a
 node-by-node walkthrough.
 
@@ -12,6 +12,7 @@ node-by-node walkthrough.
 | [whatsapp-lead-qualifier](whatsapp-lead-qualifier/) | WhatsApp agent that runs a real BANT qualification over multiple turns, persists every fact to Postgres as it's learned, resumes dropped conversations days later, and routes hot leads to sales via Slack | n8n, OpenAI, WhatsApp Business Cloud API, Supabase Postgres, Slack |
 | [crm-lead-engine](crm-lead-engine/) | Two-lane CRM engine on HubSpot: scheduled enrichment/scoring of existing contacts, plus an inbound email lead-capture lane that qualifies, temperature-routes, and auto-replies with guard-rails | n8n, OpenAI, HubSpot CRM API, Gmail, Slack |
 | [helpdesk-ticket-automation](helpdesk-ticket-automation/) | Support ticket automation: webhook intake, validation, rules-based triage with SLA deadlines, knowledge-base auto-replies, and human escalation via Slack — tested end to end (7/7 scenarios passing on n8n 2.43.8) | n8n, webhooks, HTTP APIs |
+| [lead-pipeline](lead-pipeline/) | Website lead to booked call: instant WhatsApp template, LLM-assisted booking with availability check and read-back verification, day-before reminder sweep, global error handler — live-tested end to end (25 cases, 147 assertions passing on n8n 2.43.8) | n8n, WhatsApp Business Cloud API, Google Calendar, Postgres, OpenAI |
 
 Each folder has its own `README.md` (setup, architecture, results) and
 `WALKTHROUGH.md` (every node explained). Workflow JSONs ship with credentials
@@ -26,4 +27,7 @@ stripped — import into n8n, add your own credentials, and run.
   project layouts.
 - `helpdesk-ticket-automation` is an original build created for this portfolio:
   designed, implemented, and tested end to end in n8n (7/7 test scenarios
+  passing — see its `TEST_REPORT.md`).
+- `lead-pipeline` is an original build created for this portfolio: designed,
+  implemented, and live-tested end to end in n8n (25 cases, 147 assertions
   passing — see its `TEST_REPORT.md`).

@@ -1,0 +1,134 @@
+{
+  "name": "Lead Pipeline: Global Error Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Lead Pipeline: Global Error Handler\nSet this workflow as the default error workflow for the instance (and in each pipeline workflow's settings). Any failed execution is logged to pipeline_errors and posted to the ops Slack channel with the workflow, the node, the error and the execution id, so failures are visible even when nobody is watching n8n.",
+        "height": 180,
+        "width": 880,
+        "color": 5
+      },
+      "id": "e8ae15b5-395b-5a9c-8440-d05f8fe898d4",
+      "name": "Note: Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -160
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a061c3cd-e421-50f1-94fa-402036d598d9",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The Error Trigger hands over the failed execution. Normalize it into one\n// record that is easy to store and easy to read in Slack.\nconst j = $input.first().json || {};\nconst exec = j.execution || {};\nconst wfObj = j.workflow || {};\nconst err = exec.error || {};\nreturn [{\n  json: {\n    workflow: wfObj.name || 'unknown workflow',\n    node: exec.lastNodeExecuted || 'unknown node',\n    error: String(err.message || err.description || 'Unknown error').slice(0, 800),\n    executionId: exec.id || null,\n    executionUrl: exec.url || null,\n    mode: exec.mode || 'unknown',\n    time: new Date().toISOString(),\n  },\n}];\n"
+      },
+      "id": "d52d45d2-d52f-58a2-a0b5-5f00b84402ce",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO pipeline_errors (workflow, node, error, execution_id) VALUES ($1, $2, $3, $4)",
+        "options": {
+          "queryReplacement": "={{ [$json.workflow, $json.node, $json.error, $json.executionId] }}"
+        }
+      },
+      "id": "327fe15b-9ae7-5b38-9028-2c41db4799fc",
+      "name": "Log Execution Error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        520,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "",
+          "name": "Postgres (placeholder, add your own)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: 'n8n error in ' + $('Format Error').first().json.workflow + ' at node ' + $('Format Error').first().json.node + ': ' + $('Format Error').first().json.error + ' (execution ' + $('Format Error').first().json.executionId + ', ' + $('Format Error').first().json.time + ')' }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "3dcca846-81ab-5877-88f7-7e45ce7ab9ec",
+      "name": "Alert Ops Channel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        300
+      ],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Log Execution Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Execution Error": {
+      "main": [
+        [
+          {
+            "node": "Alert Ops Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "Africa/Addis_Ababa"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

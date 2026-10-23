@@ -1,0 +1,1139 @@
+{
+ "name": "Lead Pipeline: Day-Before Reminder Sweep",
+ "nodes": [
+  {
+   "parameters": {
+    "content": "## Lead Pipeline: Day-Before Reminder Sweep\nRuns hourly. Finds booked meetings starting in 23 to 25 hours, verifies each event still exists on the calendar, and sends the WhatsApp reminder template (Confirm / Reschedule buttons). A second pass catches anything missed (meetings 2 to 23 hours out) and flags those reminders as late. If the calendar event is gone, the lead is marked CANCELLED and sales is notified instead of reminding about a dead meeting.",
+    "height": 200,
+    "width": 940,
+    "color": 5
+   },
+   "id": "e181479b-74ab-50a2-b921-fb06f954a6c1",
+   "name": "Note: Overview",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -320,
+    -160
+   ]
+  },
+  {
+   "parameters": {
+    "content": "### Loop pattern\nSplitInBatches drives the loop: the last node of each branch connects back to it. The Google Calendar node replaces the item, so the lead context is restored from the context Code node through the paired item index. Every send and cancellation writes a pipeline_events row, which is what the sweep summary counts.",
+    "height": 160,
+    "width": 760,
+    "color": 5
+   },
+   "id": "0588f4a7-b950-5488-a918-7ab4a1fcbdb7",
+   "name": "Note: Loop pattern",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    700,
+    620
+   ]
+  },
+  {
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "hours",
+       "hoursInterval": 1
+      }
+     ]
+    }
+   },
+   "id": "1bb88f34-cc39-5b2d-9093-1ee90b5a4520",
+   "name": "Hourly Schedule",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.4,
+   "position": [
+    0,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "SELECT id, name, phone, email, event_id, meeting_start, timezone FROM leads WHERE status = 'BOOKED' AND reminder_sent = false AND meeting_start BETWEEN now() + interval '23 hours' AND now() + interval '25 hours' ORDER BY meeting_start ASC",
+    "options": {}
+   },
+   "id": "f56a2ecb-d712-58ee-af67-e9b819d6082f",
+   "name": "Find Due Reminders",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    260,
+    380
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   },
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "batchSize": 5,
+    "options": {}
+   },
+   "id": "baf22502-f41e-5801-a667-d408f2afc95e",
+   "name": "Split Into Batches",
+   "type": "n8n-nodes-base.splitInBatches",
+   "typeVersion": 3,
+   "position": [
+    520,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Passes the lead row through unchanged and tags the reminder as\n// on time (late = false) or as a catch-up send (late = true).\nreturn $input.all().map((i) => ({ json: { ...i.json, late: false } }));\n"
+   },
+   "id": "08b006cd-42bf-5c7c-9bdf-ebb5424d5c4b",
+   "name": "Lead Context",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    780,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "resource": "event",
+    "operation": "get",
+    "calendar": {
+     "__rl": true,
+     "value": "={{ $env.GOOGLE_CALENDAR_ID }}",
+     "mode": "id"
+    },
+    "eventId": "={{ $json.event_id }}"
+   },
+   "id": "0cd4ebd9-b9eb-5312-a250-91d4900f02d5",
+   "name": "Verify Event Still Exists",
+   "type": "n8n-nodes-base.googleCalendar",
+   "typeVersion": 1.3,
+   "position": [
+    1040,
+    380
+   ],
+   "credentials": {
+    "googleCalendarOAuth2": {
+     "id": "",
+     "name": "Google Calendar OAuth2 (placeholder, add your own)"
+    }
+   },
+   "onError": "continueErrorOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// The Google Calendar node replaces the item with the event (or an error),\n// so the lead context is restored from the context node via the paired item.\nconst idx = ($input.first().pairedItem || {}).item || 0;\nconst all = $('Lead Context').all();\nconst ctx = ((all[idx] || all[0] || {}).json) || {};\nlet when = ctx.meeting_start;\ntry { when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: ctx.timezone || 'Africa/Addis_Ababa' }).format(new Date(ctx.meeting_start)); } catch (e) {}\nconst base = { leadId: ctx.id, name: ctx.name, phone: ctx.phone, email: ctx.email, eventId: ctx.event_id, meetingStartText: when, late: !!ctx.late };\nreturn [{ json: base }];\n"
+   },
+   "id": "2441aa4b-de94-5516-9ae9-152a25c4be61",
+   "name": "Compose Reminder",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1300,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "=https://graph.facebook.com/v21.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+    "authentication": "none",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "={{ 'Bearer ' + $env.WHATSAPP_ACCESS_TOKEN }}"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  to: $json.phone.replace('+', ''),\n  type: 'template',\n  template: {\n    name: 'meeting_reminder',\n    language: { code: 'en' },\n    components: [\n      { type: 'body', parameters: [\n        { type: 'text', text: $json.name },\n        { type: 'text', text: $json.meetingStartText }\n      ] },\n      { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: 'CONFIRM' }] },\n      { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: 'RESCHEDULE' }] }\n    ]\n  }\n}) }}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "id": "b39b9575-7620-50a6-ae1a-afaf8b31bf6b",
+   "name": "Send Reminder Template",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1560,
+    300
+   ],
+   "retryOnFail": true,
+   "maxTries": 3,
+   "waitBetweenTries": 5000,
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET reminder_sent = true, status = 'REMINDED', updated_at = now() WHERE id = $1 RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$('Compose Reminder').first().json.leadId] }}"
+    }
+   },
+   "id": "996cdeb6-f8ff-53f7-a74b-db506c4f85f9",
+   "name": "Mark Reminded",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    1820,
+    300
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'reminder.sent', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Compose Reminder').first().json.leadId, JSON.stringify({ late: $('Compose Reminder').first().json.late, eventId: $('Compose Reminder').first().json.eventId })] }}"
+    }
+   },
+   "id": "9a4a4408-4406-520f-885d-f9a81bb9192e",
+   "name": "Log Reminder Event",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2080,
+    300
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "// The Google Calendar node replaces the item with the event (or an error),\n// so the lead context is restored from the context node via the paired item.\nconst idx = ($input.first().pairedItem || {}).item || 0;\nconst all = $('Lead Context').all();\nconst ctx = ((all[idx] || all[0] || {}).json) || {};\nconst base = { leadId: ctx.id, name: ctx.name, phone: ctx.phone, email: ctx.email, eventId: ctx.event_id, late: !!ctx.late };\nreturn [{ json: base }];\n"
+   },
+   "id": "9f1acb9e-0b41-55f4-8bb6-59e219de2973",
+   "name": "Cancelled Context",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1300,
+    560
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET status = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$json.leadId] }}"
+    }
+   },
+   "id": "710275a2-6869-5c0d-b44d-b47735e48cc3",
+   "name": "Mark Cancelled",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    1560,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'reminder.cancelled', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Cancelled Context').first().json.leadId, JSON.stringify({ eventId: $('Cancelled Context').first().json.eventId })] }}"
+    }
+   },
+   "id": "e2ffe2ed-3519-55a6-8b64-399e3e28d672",
+   "name": "Log Cancel Event",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    1820,
+    560
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: 'Meeting cancelled: the calendar event for lead ' + $('Cancelled Context').first().json.leadId + ' (' + $('Cancelled Context').first().json.name + ') no longer exists. Lead marked CANCELLED, no reminder sent.' }) }}",
+    "options": {
+     "timeout": 15000
+    }
+   },
+   "id": "767bda6f-0a0c-5ea2-881e-ac0afdd3280c",
+   "name": "Notify Sales Cancelled",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2080,
+    560
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "SELECT id, name, phone, email, event_id, meeting_start, timezone FROM leads WHERE status = 'BOOKED' AND reminder_sent = false AND meeting_start BETWEEN now() + interval '2 hours' AND now() + interval '23 hours' ORDER BY meeting_start ASC",
+    "options": {}
+   },
+   "id": "d1df1a5e-c3bc-5418-940a-c960cb88b37a",
+   "name": "Find Missed Reminders",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    780,
+    100
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   },
+   "alwaysOutputData": true
+  },
+  {
+   "parameters": {
+    "batchSize": 5,
+    "options": {}
+   },
+   "id": "18d80ad4-4891-5909-b6d4-6e659780a43c",
+   "name": "Split Catch-up",
+   "type": "n8n-nodes-base.splitInBatches",
+   "typeVersion": 3,
+   "position": [
+    1040,
+    100
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "// Passes the lead row through unchanged and tags the reminder as\n// on time (late = false) or as a catch-up send (late = true).\nreturn $input.all().map((i) => ({ json: { ...i.json, late: true } }));\n"
+   },
+   "id": "b2f96220-6af6-5485-b618-af4da7f96d7b",
+   "name": "Lead Context (Late)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1300,
+    100
+   ]
+  },
+  {
+   "parameters": {
+    "resource": "event",
+    "operation": "get",
+    "calendar": {
+     "__rl": true,
+     "value": "={{ $env.GOOGLE_CALENDAR_ID }}",
+     "mode": "id"
+    },
+    "eventId": "={{ $json.event_id }}"
+   },
+   "id": "3a50f258-bc3f-556b-9db7-8b4016ce2f92",
+   "name": "Verify Event Still Exists (Late)",
+   "type": "n8n-nodes-base.googleCalendar",
+   "typeVersion": 1.3,
+   "position": [
+    1560,
+    100
+   ],
+   "credentials": {
+    "googleCalendarOAuth2": {
+     "id": "",
+     "name": "Google Calendar OAuth2 (placeholder, add your own)"
+    }
+   },
+   "onError": "continueErrorOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// The Google Calendar node replaces the item with the event (or an error),\n// so the lead context is restored from the context node via the paired item.\nconst idx = ($input.first().pairedItem || {}).item || 0;\nconst all = $('Lead Context (Late)').all();\nconst ctx = ((all[idx] || all[0] || {}).json) || {};\nlet when = ctx.meeting_start;\ntry { when = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: ctx.timezone || 'Africa/Addis_Ababa' }).format(new Date(ctx.meeting_start)); } catch (e) {}\nconst base = { leadId: ctx.id, name: ctx.name, phone: ctx.phone, email: ctx.email, eventId: ctx.event_id, meetingStartText: when, late: !!ctx.late };\nreturn [{ json: base }];\n"
+   },
+   "id": "25549489-ac71-5586-8e11-97f83441ccd7",
+   "name": "Compose Reminder (Late)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1820,
+    20
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "=https://graph.facebook.com/v21.0/{{ $env.WHATSAPP_PHONE_NUMBER_ID }}/messages",
+    "authentication": "none",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "={{ 'Bearer ' + $env.WHATSAPP_ACCESS_TOKEN }}"
+      },
+      {
+       "name": "Content-Type",
+       "value": "application/json"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({\n  messaging_product: 'whatsapp',\n  to: $json.phone.replace('+', ''),\n  type: 'template',\n  template: {\n    name: 'meeting_reminder',\n    language: { code: 'en' },\n    components: [\n      { type: 'body', parameters: [\n        { type: 'text', text: $json.name },\n        { type: 'text', text: $json.meetingStartText }\n      ] },\n      { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: 'CONFIRM' }] },\n      { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: 'RESCHEDULE' }] }\n    ]\n  }\n}) }}",
+    "options": {
+     "timeout": 30000
+    }
+   },
+   "id": "4161a26e-f56b-54bc-bf6d-233cdf061919",
+   "name": "Send Reminder Template (Late)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2080,
+    20
+   ],
+   "retryOnFail": true,
+   "maxTries": 3,
+   "waitBetweenTries": 5000,
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET reminder_sent = true, status = 'REMINDED', updated_at = now() WHERE id = $1 RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$('Compose Reminder (Late)').first().json.leadId] }}"
+    }
+   },
+   "id": "b30b8433-cc11-5dd9-95f7-833d6db43a8f",
+   "name": "Mark Reminded (Late)",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2340,
+    20
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'reminder.sent', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Compose Reminder (Late)').first().json.leadId, JSON.stringify({ late: true, eventId: $('Compose Reminder (Late)').first().json.eventId })] }}"
+    }
+   },
+   "id": "5722ee27-c851-5ddd-993b-4815e0e6b9c3",
+   "name": "Log Reminder Event (Late)",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2600,
+    20
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: 'Late reminder sent for lead ' + $('Compose Reminder (Late)').first().json.leadId + ' (meeting inside 23 hours). The main sweep missed it, worth a look.' }) }}",
+    "options": {
+     "timeout": 15000
+    }
+   },
+   "id": "23f92598-c552-5e80-8493-88ae1995d6d4",
+   "name": "Notify Ops Late Reminder",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2860,
+    20
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "jsCode": "// The Google Calendar node replaces the item with the event (or an error),\n// so the lead context is restored from the context node via the paired item.\nconst idx = ($input.first().pairedItem || {}).item || 0;\nconst all = $('Lead Context (Late)').all();\nconst ctx = ((all[idx] || all[0] || {}).json) || {};\nconst base = { leadId: ctx.id, name: ctx.name, phone: ctx.phone, email: ctx.email, eventId: ctx.event_id, late: !!ctx.late };\nreturn [{ json: base }];\n"
+   },
+   "id": "0f0d7762-5e5a-52a8-889e-d1e9748126ce",
+   "name": "Cancelled Context (Late)",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1820,
+    260
+   ]
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "UPDATE leads SET status = 'CANCELLED', updated_at = now() WHERE id = $1 RETURNING id, status",
+    "options": {
+     "queryReplacement": "={{ [$json.leadId] }}"
+    }
+   },
+   "id": "392ce765-42ac-543a-9391-a35e4b17da62",
+   "name": "Mark Cancelled (Late)",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2080,
+    260
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "INSERT INTO pipeline_events (lead_id, type, payload) VALUES ($1, 'reminder.cancelled', $2::jsonb)",
+    "options": {
+     "queryReplacement": "={{ [$('Cancelled Context (Late)').first().json.leadId, JSON.stringify({ eventId: $('Cancelled Context (Late)').first().json.eventId, late: true })] }}"
+    }
+   },
+   "id": "c475e0ea-1556-580f-b5ed-0dd1dc6aad96",
+   "name": "Log Cancel Event (Late)",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    2340,
+    260
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: 'Meeting cancelled (found on catch up): calendar event for lead ' + $('Cancelled Context (Late)').first().json.leadId + ' no longer exists. Lead marked CANCELLED.' }) }}",
+    "options": {
+     "timeout": 15000
+    }
+   },
+   "id": "850ca837-9f8c-54e0-9424-6bb59f9446ad",
+   "name": "Notify Sales Cancelled (Late)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2600,
+    260
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "operation": "executeQuery",
+    "query": "SELECT (SELECT count(*) FROM pipeline_events WHERE type = 'reminder.sent' AND created_at > now() - interval '70 minutes') AS sent, (SELECT count(*) FROM pipeline_events WHERE type = 'reminder.sent' AND (payload->>'late') = 'true' AND created_at > now() - interval '70 minutes') AS late, (SELECT count(*) FROM pipeline_events WHERE type = 'reminder.cancelled' AND created_at > now() - interval '70 minutes') AS cancelled",
+    "options": {}
+   },
+   "id": "45adf02d-d22b-5f8c-9426-f8f8f3291425",
+   "name": "Count Sweep Results",
+   "type": "n8n-nodes-base.postgres",
+   "typeVersion": 2.7,
+   "position": [
+    1300,
+    800
+   ],
+   "credentials": {
+    "postgres": {
+     "id": "",
+     "name": "Postgres (placeholder, add your own)"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const j = $input.first().json || {};\nconst sent = Number(j.sent || 0);\nconst late = Number(j.late || 0);\nconst cancelled = Number(j.cancelled || 0);\nreturn [{\n  json: {\n    sent, late, cancelled, total: sent + cancelled,\n    text: 'Reminder sweep: ' + sent + ' reminders sent (' + late + ' late catch ups), '\n      + cancelled + ' meetings found cancelled, sales notified.',\n  },\n}];\n"
+   },
+   "id": "d384fd64-be3a-5b94-9b38-dcb71a90c8e9",
+   "name": "Sweep Summary",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1560,
+    800
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "77b09594-9184-515b-b3f7-b75f420d0ca9",
+       "leftValue": "={{ $json.total >= 1 }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "c3d7aeee-6332-517b-aefa-0c64ae3054b5",
+   "name": "Any Activity?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    1820,
+    800
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.SLACK_OPS_WEBHOOK_URL }}",
+    "authentication": "none",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+    "options": {
+     "timeout": 15000
+    }
+   },
+   "id": "edd6ae4d-b53d-5267-875e-2e6a25973b17",
+   "name": "Post Sweep Summary",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2080,
+    800
+   ],
+   "onError": "continueRegularOutput"
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "d42afd54-2fe5-4837-b78a-8734f7950e89",
+       "leftValue": "={{ !!$json.id }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "124f0324-299f-4c54-882d-c780ee86a2e6",
+   "name": "Has Lead Row?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    1000,
+    380
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "6c54c775-086c-40de-ac6b-538c48ddcf4b",
+       "leftValue": "={{ !!$json.id }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "007c935f-65f7-42c4-abc1-8b4de437891e",
+   "name": "Has Lead Row? (Late)",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    1520,
+    100
+   ]
+  }
+ ],
+ "connections": {
+  "Hourly Schedule": {
+   "main": [
+    [
+     {
+      "node": "Find Due Reminders",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Find Due Reminders": {
+   "main": [
+    [
+     {
+      "node": "Split Into Batches",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Split Into Batches": {
+   "main": [
+    [
+     {
+      "node": "Find Missed Reminders",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Lead Context",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Lead Context": {
+   "main": [
+    [
+     {
+      "node": "Has Lead Row?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Verify Event Still Exists": {
+   "main": [
+    [
+     {
+      "node": "Compose Reminder",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Cancelled Context",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Compose Reminder": {
+   "main": [
+    [
+     {
+      "node": "Send Reminder Template",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Send Reminder Template": {
+   "main": [
+    [
+     {
+      "node": "Mark Reminded",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Reminded": {
+   "main": [
+    [
+     {
+      "node": "Log Reminder Event",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Reminder Event": {
+   "main": [
+    [
+     {
+      "node": "Split Into Batches",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Cancelled Context": {
+   "main": [
+    [
+     {
+      "node": "Mark Cancelled",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Cancelled": {
+   "main": [
+    [
+     {
+      "node": "Log Cancel Event",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Cancel Event": {
+   "main": [
+    [
+     {
+      "node": "Notify Sales Cancelled",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Notify Sales Cancelled": {
+   "main": [
+    [
+     {
+      "node": "Split Into Batches",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Find Missed Reminders": {
+   "main": [
+    [
+     {
+      "node": "Split Catch-up",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Split Catch-up": {
+   "main": [
+    [
+     {
+      "node": "Count Sweep Results",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Lead Context (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Lead Context (Late)": {
+   "main": [
+    [
+     {
+      "node": "Has Lead Row? (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Verify Event Still Exists (Late)": {
+   "main": [
+    [
+     {
+      "node": "Compose Reminder (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Cancelled Context (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Compose Reminder (Late)": {
+   "main": [
+    [
+     {
+      "node": "Send Reminder Template (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Send Reminder Template (Late)": {
+   "main": [
+    [
+     {
+      "node": "Mark Reminded (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Reminded (Late)": {
+   "main": [
+    [
+     {
+      "node": "Log Reminder Event (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Reminder Event (Late)": {
+   "main": [
+    [
+     {
+      "node": "Notify Ops Late Reminder",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Notify Ops Late Reminder": {
+   "main": [
+    [
+     {
+      "node": "Split Catch-up",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Cancelled Context (Late)": {
+   "main": [
+    [
+     {
+      "node": "Mark Cancelled (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Cancelled (Late)": {
+   "main": [
+    [
+     {
+      "node": "Log Cancel Event (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Log Cancel Event (Late)": {
+   "main": [
+    [
+     {
+      "node": "Notify Sales Cancelled (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Notify Sales Cancelled (Late)": {
+   "main": [
+    [
+     {
+      "node": "Split Catch-up",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Count Sweep Results": {
+   "main": [
+    [
+     {
+      "node": "Sweep Summary",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Sweep Summary": {
+   "main": [
+    [
+     {
+      "node": "Any Activity?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Any Activity?": {
+   "main": [
+    [
+     {
+      "node": "Post Sweep Summary",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Has Lead Row?": {
+   "main": [
+    [
+     {
+      "node": "Verify Event Still Exists",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Split Into Batches",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Has Lead Row? (Late)": {
+   "main": [
+    [
+     {
+      "node": "Verify Event Still Exists (Late)",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Split Catch-up",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "saveExecutionProgress": true,
+  "saveManualExecutions": true,
+  "timezone": "Africa/Addis_Ababa"
+ },
+ "pinData": {},
+ "meta": {
+  "templateCredsSetupCompleted": false
+ }
+}
